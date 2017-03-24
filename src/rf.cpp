@@ -7,13 +7,26 @@
 #include "rf.h"
 #include "rfm95.h"
 #include "spi.h"
+#include "tim.h"
 #include "uart1.h"
+
+// RFM device DIO pin map to GPIO B
+#define RFM95_DIO0 GPIO_Pin_3
+#define RFM95_DIO4 GPIO_Pin_4
 
 inline void RFM95_RESET_On(void) {
     GPIO_SetBits(GPIOB, GPIO_Pin_5);
 }
 inline void RFM95_RESET_Off(void) {
     GPIO_ResetBits(GPIOB, GPIO_Pin_5);
+}
+
+inline bool RFM95_DIO0_isOn(void) {
+    return (GPIO_ReadInputDataBit(GPIOB, RFM95_DIO0) == Bit_SET);
+}
+
+inline bool RFM95_DIO4_isOn(void) {
+    return (GPIO_ReadInputDataBit(GPIOB, RFM95_DIO4) == Bit_SET);
 }
 
 static void RFM95_RESET(uint8_t On) {
@@ -28,12 +41,10 @@ void RFM95_GPIO_Configuration(void) {
 
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB /* | RCC_APB2Periph_AFIO */, ENABLE);
 
-    //    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3 | GPIO_Pin_4;  // PB4 = DIO0 and PB3 = DIO4 of RFM69
-    //    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-    //    // GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IPU;
-    //    GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-    // #TODO init DIO0-5
+    // #TODO init DIO0-5 pins
+    GPIO_InitStructure.GPIO_Pin = (RFM95_DIO0 | RFM95_DIO4);
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPD;  // Mode - input, pulled low
+    GPIO_Init(GPIOB, &GPIO_InitStructure);
 
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_5;  // PB5 = RESET (active high)
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
@@ -96,16 +107,18 @@ static uint8_t Transmit(const uint8_t *PacketByte, uint8_t Thresh, uint8_t MaxWa
 
 void StartRFchip(void) {
     RFM95_GPIO_Configuration();
-    TRX.Select = SPI1_Select;  //
+    TRX.Select = SPI1_Select;
     TRX.Deselect = SPI1_Deselect;
     TRX.TransferByte = SPI1_TransferByte;
+    TRX.DIO0_isOn = RFM95_DIO0_isOn;
+    TRX.DIO4_isOn = RFM95_DIO4_isOn;
     TRX.RESET_On = RFM95_RESET_On;
     TRX.RESET_Off = RFM95_RESET_Off;
 
     TRX.RESET_On();
-    // wait(10)
+    TIM3_DelayMS(10);  // #TODO how long the delay was supposed to be?
     TRX.RESET_Off();
-    // wait(10)
+    TIM3_DelayMS(10);
     TRX.BaseFrequency = BaseFreq;
     TRX.ChannelSpacing = ChanSpace;
     TRX.FrequencyCorrection = 0;
@@ -113,39 +126,71 @@ void StartRFchip(void) {
     TRX.WriteMode(RH_RF95_MODE_STDBY);
 }
 
-void TX_OGN_packet_test(uint8_t *packet) {
-    TRX.WriteMode(RH_RF95_MODE_STDBY);
-    TRX.WriteTxPower(14);
-    TRX.WriteSYNC(8, 7, OGN_SYNC);
+/*
+ * Transmits packet of default lenght of 26
+ */
+void RFM95_TransmitPacket(uint8_t *txPakData) {
+    TRX.WriteMode(RH_RF95_MODE_STDBY);  // go standby mode for TX setup
+    TRX.WriteTxPower(14);               // write TX power
+    TRX.WriteSYNC(8, 7, OGN_SYNC);      // write complete SYNC seq
     TRX.ClearIrqFlags();
-    TRX.WritePacket(packet);
-    //    TRX.WritePacket(
-    //        (const
-    //        uint8_t*)"qwertyuiyuiopqwertyuio"
-    //        "p",
-    //        15 * 10);
-    TRX.WriteMode(RH_RF95_MODE_TX);
-    TRX.WriteMode(RH_RF95_MODE_STDBY);
-    TRX.WriteTxPowerMin();
-    TRX.WriteSYNC(7, 7, OGN_SYNC);
+    TRX.WritePacket(txPakData);
+
+    TRX.WriteMode(RH_RF95_MODE_TX);  // mode to TX
+
+    // Wait for transmission to end
+    for (uint8_t waitCnt = 10; waitCnt; --waitCnt) {
+        TIM3_DelayUS(10);
+        uint8_t mode = TRX.ReadMode();
+        uint16_t flags = TRX.ReadIrqFlags();
+        if (mode != RH_RF95_MODE_TX) break;  // mode no longer TX
+        if (RFM95_DIO0_isOn()) break;        // PacketSent IRQ active
+    }
+
+    TRX.WriteMode(RH_RF95_MODE_STDBY);  // mode back to STDBY
+    TRX.WriteTxPowerMin();              // write min power (?)
+    TRX.WriteSYNC(7, 7, OGN_SYNC);      // write incomplete SYNC seq for RX mode (#TODO why?)
 }
 
-int RX_OGN_packet_test(uint8_t *pBuffer) {
-    // uint16_t
+/*
+ * Receives packet of default lenght of 26
+ * Returns if PayloadReady IRQ not active
+ */
+uint8_t RFM95_ReceivePacket(uint8_t *pakData, uint8_t *pakErr) {
+    if (RFM95_DIO0_isOn() == false) return 0;  // PayloadReady IRQ not active
+
+    TRX.ReadPacket(pakData, pakErr);  // read packet
+
+    // #TODO handle pakError check
+    // LDPC_Check(pakData);
+
+    return 1;
+}
+
+RFM95_RX_Stats RFM95_Receive_TEST(uint8_t *pakData, uint8_t *expectedData, uint8_t rcvSlot_ms) {
+    uint8_t tmp;
     uint8_t errBuffer[26];
+    struct RFM95_RX_Stats stats;
+
+    TRX.WriteMode(RH_RF95_MODE_STDBY);  // mode to STDBY
+    // TODO config before switch RX mode?
+    TRX.WriteMode(RH_RF95_MODE_RX);  // mode to RX
+    TIM3_DelayMS(1);                 // Wait for RxReady (default BW -> 600us)
+
+    // Wait for rcvSlot ms while receiving packets
+    for (rcvSlot_ms; rcvSlot_ms; --rcvSlot_ms) {
+        tmp = RFM95_ReceivePacket(pakData, errBuffer);
+
+        // Check for byte errors
+        if (tmp)
+            for (int i = 0; i < 26; ++i)
+                if (pakData[i] != expectedData[i]) stats.byteErrorCnt++;
+
+        stats.rxPacketCnt += tmp;
+        TIM3_DelayMS(1);
+    }
 
     TRX.WriteMode(RH_RF95_MODE_STDBY);
-    // TODO config before switch RX mode?
-    TRX.WriteMode(RH_RF95_MODE_RX);
-    // Wait for RxReady
-    while (TRX.ReadIrqFlags() & RH_RF95_IRQ_RxReady)
-        ;
-    if (TRX.ReadIrqFlags() & RH_RF95_IRQ_PayloadReady) {  // on payload ready flag
-        TRX.ReadPacket(pBuffer, (uint8_t *)errBuffer);
 
-        // return (TRX.ReadIrqFlags())
-    }
-    return 0;
-    // wait until receive
-    // PayloadReady flag
+    return stats;
 }

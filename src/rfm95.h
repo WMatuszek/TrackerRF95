@@ -178,7 +178,7 @@ class RFM95 {
         Select();
         TransferByte(Addr | 0x80);
         Old = TransferByte(Byte);
-        SPI1_Deselect();
+        Deselect();
 
         return Old;
     }
@@ -190,7 +190,7 @@ class RFM95 {
         TransferByte(Addr | 0x80);
         Old = TransferByte(Word >> 8);
         Old = (Old << 8) | (Word & 0xff);
-        SPI1_Deselect();
+        Deselect();
 
         return Old;
     }
@@ -203,7 +203,7 @@ class RFM95 {
         for (Idx = 0; Idx < Len; Idx++) {
             TransferByte(Data[Idx]);
         }
-        SPI1_Deselect();
+        Deselect();
     }
 
     uint8_t ReadByte(uint8_t Addr = 0) const {
@@ -212,7 +212,7 @@ class RFM95 {
         Select();
         TransferByte(Addr);
         Byte = TransferByte(0);
-        SPI1_Deselect();
+        Deselect();
 
         return Byte;
     }
@@ -224,7 +224,7 @@ class RFM95 {
         TransferByte(Addr);
         Word = TransferByte(0);
         Word = (Word << 8) | TransferByte(0);
-        SPI1_Deselect();
+        Deselect();
 
         return Word;
     }
@@ -239,7 +239,7 @@ class RFM95 {
         Old = TransferByte(Freq >> 16);
         Old = (Old << 8) | TransferByte(Freq >> 8);
         Old = (Old << 8) | TransferByte(Freq);
-        SPI1_Deselect();
+        Deselect();
 
         return Old;
     }
@@ -260,7 +260,7 @@ class RFM95 {
             TransferByte(ManchesterEncode[Byte >> 4]);
             TransferByte(ManchesterEncode[Byte & 0x0f]);
         }
-        SPI1_Deselect();
+        Deselect();
     }
 
     void ReadPacket(uint8_t *Data, uint8_t *Err, uint8_t Len = 26) const {
@@ -285,7 +285,7 @@ class RFM95 {
             Data[Idx] = (ByteH << 4) | ByteL;
             Err[Idx] = (ErrH << 4) | ErrL;
         }
-        SPI1_Deselect();
+        Deselect();
     }
 
     void WriteSYNC(uint8_t WriteSize, uint8_t SyncTol, const uint8_t *SyncData) const {
@@ -297,18 +297,12 @@ class RFM95 {
     }
 
     void WriteMode(uint8_t Mode = RH_RF95_MODE_STDBY) const { WriteByte(Mode, RH_RF95_REG_01_OP_MODE); }
-
     uint8_t ReadMode(void) const { return ReadByte(RH_RF95_REG_01_OP_MODE); }
-
     uint8_t ModeReady(void) const { return ReadByte(RH_RF95_REG_3E_IRQ_FLAGS_1) & 0x80; }
-
     uint16_t ReadIrqFlags(void) const { return ReadWord(RH_RF95_REG_3E_IRQ_FLAGS_1); }
-
     void ClearIrqFlags(void) const { WriteWord(0x0810, RH_RF95_REG_3E_IRQ_FLAGS_1); }
-
-    void WriteTxPower_W(int8_t TxPower) const {}
-
-    void WriteTxPower_HW(int8_t TxPower) const {}
+    void WriteTxPower_W(int8_t TxPower) const {}   // was RFM69W specific
+    void WriteTxPower_HW(int8_t TxPower) const {}  // was RFM69HW specific
 
     void WriteTxPower(int8_t TxPower, uint8_t isHW = 0) const {
         uint8_t Old;
@@ -320,7 +314,7 @@ class RFM95 {
         if (useRFO) {
             if (TxPower > 14) TxPower = 14;
             if (TxPower < -1) TxPower = -1;
-
+            // Set RFO, MaxPower = 111, OutputPower = TxP+1
             WriteByte(RH_RF95_MAX_POWER | (TxPower + 1), RH_RF95_REG_09_PA_CONFIG);
         } else {
             if (TxPower > 23) TxPower = 23;
@@ -328,15 +322,16 @@ class RFM95 {
 
             if (TxPower > 20) {
                 Old = ReadByte(RH_RF95_REG_4D_PA_DAC);
-                Old = (Old & 0xf8) | 0x07;
+                Old = (Old & 0xf8) | 0x07;  // retain default 7-3 bit val
                 WriteByte(Old, RH_RF95_REG_4D_PA_DAC);
                 TxPower -= 3;
+
             } else {
                 Old = ReadByte(RH_RF95_REG_4D_PA_DAC);
-                Old = (Old & 0xf8) | 0x04;
+                Old = (Old & 0xf8) | 0x04;  // retain default 7-3 bit val
                 WriteByte(Old, RH_RF95_REG_4D_PA_DAC);
             }
-
+            // Set PA_Boost, OutputPower = TxP - 5 (MaxPower unused in PA_Boost mode)
             WriteByte(RH_RF95_PA_SELECT | (TxPower - 5), RH_RF95_REG_09_PA_CONFIG);
         }
     }
@@ -356,6 +351,7 @@ class RFM95 {
         WriteMode(RH_RF95_MODE_STDBY);  // change mode to STBY
 
         ClearIrqFlags();
+        // #TODO bad register, ramp etc. configured in 0x0A reg
         WriteByte(0x49, RH_RF95_REG_09_PA_CONFIG);  // gaussian filter BT = 0.5,
                                                     // rise/fall time = 40us, packet
                                                     // mode, fsk mode enabled by
