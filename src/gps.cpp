@@ -4,6 +4,8 @@
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_rcc.h"
 
+#include "tim.h"
+
 #include "nmea.h"
 #include "ubx.h"
 
@@ -26,7 +28,7 @@ inline void GPS_ENABLE(void) {
 }
 
 inline int GPS_PPS_isOn(void) {
-    return GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_1) != Bit_RESET;
+    return (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_3) == Bit_SET);
 }
 
 void GPS_Configuration(void) {
@@ -52,7 +54,7 @@ static NMEA_RxMsg NMEA;  // NMEA sentences catcher
 static UBX_RxMsg UBX;    // UBX messages catcher
 
 static OgnPosition Position[4];  // four GPS position pipe
-static uint8_t PosIdx;
+static uint8_t PosIdx = 0;
 
 // static TickType_t Burst_TickCount;       // [msec] TickCount when the data burst from GPS started
 //
@@ -68,6 +70,9 @@ int32_t GPS_Longitude = 0;
 int16_t GPS_GeoidSepar = 0;  // [0.1m]
 
 // static char Line[64];                  // for console output formating
+
+// UART2 as 'STDOUT'
+static void (*STDOUT)(char) = UART2_Write;
 
 uint16_t PPS_Phase(void) {
     // TickType_t Phase = xTaskGetTickCount() - PPS_TickCount;
@@ -135,7 +140,7 @@ static void GPS_BurstEnd(void)  // when GPS stops sending data on the serial por
                 GPS_TimeSinceLock = 0;
             }
         }
-    } else  // posiiton not complete, no GPS lock
+    } else  // position not complete, no GPS lock
     {
         if (GPS_TimeSinceLock) {
             GPS_LockEnd();
@@ -176,11 +181,19 @@ static void GPS_NMEA(void)  // when GPS gets a correct NMEA sentence
 {
     // LED_PCB_Flash(2);                 // Flash the LED for 2 ms
     Position[PosIdx].ReadNMEA(NMEA);  // read position elements from NMEA
+    GPS_Altitude = Position[PosIdx].Altitude;
+    GPS_Latitude = Position[PosIdx].Latitude;
+    GPS_Longitude = Position[PosIdx].Longitude;
     if (NMEA.isGxRMC() || NMEA.isGxGGA() || NMEA.isGxGSA() || NMEA.isGPTXT()) {
         static char CRNL[3] = "\r\n";
         // xSemaphoreTake(UART1_Mutex, portMAX_DELAY);
-        Format_Bytes(UART1_Write, NMEA.Data, NMEA.Len);
-        Format_Bytes(UART1_Write, (const uint8_t *)CRNL, 2);
+        Format_String(STDOUT, "GPS DATA: ");
+        Format_Bytes(STDOUT, NMEA.Data, NMEA.Len);
+        Format_String(STDOUT, " -lat=");
+        Format_String(STDOUT, " -lon=");
+        // #TODO print -lat -lon correctly
+        Format_Bytes(STDOUT, (const uint8_t *)CRNL, 2);
+        // xSemaphoreGive(UART1_Mutex);
     }
 }
 
@@ -190,6 +203,30 @@ static void GPS_UBX(void)  // when GPS gets an UBX packet
 // ----------------------------------------------------------------------------
 
 // ----------------------------------------------------------------------------
+
+int GPS_ReadCycle(void) {
+    uint16_t delay_ms = 1;  // Delay between serial FIFO polls - at 9600baud FIFO of len 64 fills in roughly 5ms
+    uint8_t bytesRead = 0;
+    int n = 2000;  // Minimum read cycle duration - n*delay_ms = 2sec
+
+    NMEA.Clear();
+    while (n) {
+        for (;;) {
+            uint8_t Byte;
+            int Err = UART1_Read(Byte);  // get Byte from serial port, if present
+            if (Err <= 0) break;
+            ++bytesRead;
+            NMEA.ProcessByte(Byte);                // process current byte through the NMEA interpreter
+            if (NMEA.isComplete()) {               // NMEA completely received ?
+                if (NMEA.isChecked()) GPS_NMEA();  // NMEA check sum is correct ?
+                NMEA.Clear();
+            }
+        }
+        TIM3_DelayMS(delay_ms);
+        --n;
+    }
+    return bytesRead;
+}
 
 #ifdef __cplusplus
 extern "C"
@@ -205,71 +242,71 @@ extern "C"
     // vTaskDelay(5);
 
     // xSemaphoreTake(UART1_Mutex, portMAX_DELAY);
-    Format_String(UART1_Write, "TaskGPS:");
-    Format_String(UART1_Write, "\n");
+    Format_String(STDOUT, "TaskGPS:");
+    Format_String(STDOUT, "\n");
     // xSemaphoreGive(UART1_Mutex);
 
     int Burst = (-1);  // GPS transmission ongoing or line is idle ?
+                       //{ // why new scope {} without if / loop statement?!
+    int LineIdle = 0;  // counts idle time for the GPS data
+    int PPS = 0;
+    NMEA.Clear();
+    UBX.Clear();  // scans GPS input for NMEA and UBX frames
+    for (uint8_t Idx = 0; Idx < 4; Idx++)
+        Position[Idx].Clear();
+    PosIdx = 0;
+    // PktIdx=0;
+
+    for (;;)  //
     {
-        int LineIdle = 0;  // counts idle time for the GPS data
-        int PPS = 0;
-        NMEA.Clear();
-        UBX.Clear();  // scans GPS input for NMEA and UBX frames
-        for (uint8_t Idx = 0; Idx < 4; Idx++)
-            Position[Idx].Clear();
-        PosIdx = 0;
-        // PktIdx=0;
+        // vTaskDelay(1);  // wait for the next time tick
 
-        for (;;)  //
-        {
-            // vTaskDelay(1);  // wait for the next time tick
-
-            if (GPS_PPS_isOn()) {
-                if (!PPS) {
-                    PPS = 1;
-                    GPS_PPS_On();
-                }
-            }  // monitor GPS PPS signal
-            else {
-                if (PPS) {
-                    PPS = 0;
-                    GPS_PPS_Off();
-                }
+        if (GPS_PPS_isOn()) {
+            if (!PPS) {
+                PPS = 1;
+                GPS_PPS_On();
             }
-
-            LineIdle++;  // count idle time
-            for (;;) {
-                uint8_t Byte;
-                int Err = UART2_Read(Byte);
-                if (Err <= 0) break;  // get Byte from serial port
-                LineIdle = 0;         // if there was a byte: restart idle counting
-                NMEA.ProcessByte(Byte);
-                UBX.ProcessByte(Byte);  // process through the NMEA interpreter
-                if (NMEA.isComplete())  // NMEA completely received ?
-                {
-                    if (NMEA.isChecked()) GPS_NMEA();  // NMEA check sum is correct ?
-                    NMEA.Clear();
-                }
-                if (UBX.isComplete()) {
-                    GPS_UBX();
-                    UBX.Clear();
-                }
-            }
-
-            if (LineIdle == 0)  // if any bytes were received ?
-            {
-                if (Burst == 0) GPS_BurstStart();  // burst started
-                Burst = 1;
-            } else if (LineIdle > 10)  // if GPS sends no more data for 10 time ticks
-            {
-                if (Burst > 0)  // if still in burst
-                {
-                    GPS_BurstEnd();          // burst just ended
-                } else if (LineIdle > 1000)  // if idle for more than 1 sec
-                {
-                }
-                Burst = 0;
+        }  // monitor GPS PPS signal
+        else {
+            if (PPS) {
+                PPS = 0;
+                GPS_PPS_Off();
             }
         }
+
+        LineIdle++;  // count idle time
+        for (;;) {
+            uint8_t Byte;
+            int Err = UART1_Read(Byte);  // get Byte from serial port, if present
+            if (Err <= 0) break;
+            LineIdle = 0;            // if there was a byte: restart idle counting
+            NMEA.ProcessByte(Byte);  // process current byte through the NMEA interpreter
+            UBX.ProcessByte(Byte);   // process current byte through the UBX interpreter
+            if (NMEA.isComplete())   // NMEA completely received ?
+            {
+                if (NMEA.isChecked()) GPS_NMEA();  // NMEA check sum is correct ?
+                NMEA.Clear();
+            }
+            if (UBX.isComplete()) {
+                GPS_UBX();
+                UBX.Clear();
+            }
+        }
+
+        if (LineIdle == 0)  // if any bytes were received ?
+        {
+            if (Burst == 0) GPS_BurstStart();  // burst started
+            Burst = 1;
+        } else if (LineIdle > 10)  // if GPS sends no more data for 10 time ticks
+        {
+            if (Burst > 0)  // if still in burst
+            {
+                GPS_BurstEnd();          // burst just ended
+            } else if (LineIdle > 1000)  // if idle for more than 1 sec
+            {
+            }
+            Burst = 0;
+        }
     }
+    //}
 }

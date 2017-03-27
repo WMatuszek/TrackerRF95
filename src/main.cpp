@@ -6,7 +6,9 @@
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_tim.h"
 
+#include "format.h"
 #include "gpio.h"
+#include "gps.h"
 #include "rf.h"
 #include "rfm95.h"
 #include "spi.h"
@@ -44,40 +46,55 @@
 
 const int TEST_MODE = TEST_TX;
 
+// TEST PACKET
+static uint8_t packetLen = 26;
 uint8_t testPacket[26] = {0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x48, 0x65, 0x6C,
                           0x6C, 0x6F, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x00};
+
+// UART2 as 'STDOUT'
+static void (*STDOUT)(char) = UART2_Write;
 
 int main(int argc, char* argv[]) {
     uint8_t rxBuffer[26];
     struct RFM95_RX_Stats rxStats;
 
     gpio_setup();
-    // TIM2_setup();
-    TIM3_setup();
+    // TIM2_setup();  // TX timing
+    TIM3_setup();  // Delay functions
+
+    GPS_Configuration();  // GPS pins config, enable
 
     // SPI1_Configuration();
     // StartRFchip();
-    // UART1_Configuration(9600);
-
-    UART2_Configuration(9600);
-    UART2_WriteStr((char*)"Hello\n");
+    UART1_Configuration(9600);
+    UART2_Configuration(56000);
+    Format_String(STDOUT, "Start\n");
 
     GPIO_SetBits(GPIOA, GPIO_Pin_5);
 
     while (1) {
-        TIM3_DelayMS(2000);
-        GPIO_SetBits(GPIOA, GPIO_Pin_5);
-        TIM3_DelayMS(2000);
-        GPIO_ResetBits(GPIOA, GPIO_Pin_5);
-        // rxStats = RFM95_Receive_TEST(rxBuffer, testPacket, 100);
-        // #TODO use the stats
+        //        TIM3_DelayMS(2000);
+        //        GPIO_SetBits(GPIOA, GPIO_Pin_5);
+        //        TIM3_DelayMS(2000);
+        //        GPIO_ResetBits(GPIOA, GPIO_Pin_5);
+
+        // GPS reading tests
+        Format_String(STDOUT, "--GPS READ CYCLE--\n");
+        if (GPS_ReadCycle() == 0)
+            ;
+
+        // rxStats = RFM95_Receive_TEST(rxBuffer, testPacket, 1000);
     }
 }
 
 extern "C" void TIM2_IRQHandler() {
     if (TIM_GetITStatus(TIM2, TIM_IT_Update) == SET) {
         if (TEST_MODE == TEST_TX) {
-            // RFM95_TransmitPacket(testPacket);
+            if (RFM95_TransmitPacket(testPacket)) {
+                Format_String(UART2_Write, "TX OK");
+            } else {
+                Format_String(UART2_Write, "TX ERR");
+            }
         }
         TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
         GPIOA->ODR = (GPIOA->ODR) ^ (1 << 5);

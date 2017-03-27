@@ -739,6 +739,9 @@ class OGN_PrioQueue {
     }
 };
 
+/*
+ *  OGN position class
+ */
 class OgnPosition {
  public:
     uint8_t Flags;      // bit #0 = GGA and RMC had same Time
@@ -977,7 +980,7 @@ class OgnPosition {
             return ReadGGA(RxMsg);
         else if (RxMsg.isGPRMC())
             return ReadRMC(RxMsg);
-        else if (RxMsg.isGNRMC())
+        else if (RxMsg.isGNRMC())  // isGNRMC checked twice?
             return ReadRMC(RxMsg);
         else if (RxMsg.isGPGSA())
             return ReadGSA(RxMsg);

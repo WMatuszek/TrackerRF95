@@ -101,6 +101,12 @@ void UART2_Write(char Byte) {
     return;
 }
 
+void UART2_WriteNBytes(char *buffer, int n) {
+    while (n--) {
+        UART2_Write(*(buffer++));
+    }
+}
+
 void UART2_WriteStr(char *str) {
     while (*str) {
         UART2_Write(*(str++));

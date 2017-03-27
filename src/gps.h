@@ -1,3 +1,5 @@
+#ifndef GPS_H
+#define GPS_H
 
 #include "uart1.h"
 
@@ -22,8 +24,12 @@ OgnPosition *GPS_getPosition(int8_t Sec);
 
 void GPS_Configuration(void);
 
+int GPS_ReadCycle(void);
+
 #ifdef __cplusplus
 extern "C"
 #endif
     void
     vTaskGPS(void *pvParameters);
+
+#endif

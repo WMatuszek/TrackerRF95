@@ -160,11 +160,10 @@ class RFM95 {
     void (*Select)(void);              // activate SPI select
     void (*Deselect)(void);            // deactivate SPI select
     uint8_t (*TransferByte)(uint8_t);  // exchange one byte through SPI
-    // #TODO DIOx isOn functions
-    bool (*DIO0_isOn)(void);  // read DIO0 (packet is ready)
-    bool (*DIO4_isOn)(void);  // read DIO4
-    void (*RESET_On)(void);   // activate RF chip reset
-    void (*RESET_Off)(void);  // deactivate RF chip reset
+    bool (*DIO0_isOn)(void);           // read DIO0 (packet is ready)
+    bool (*DIO4_isOn)(void);           // read DIO4
+    void (*RESET_On)(void);            // activate RF chip reset
+    void (*RESET_Off)(void);           // deactivate RF chip reset
 
     uint32_t BaseFrequency;
     int32_t FrequencyCorrection;
@@ -352,11 +351,10 @@ class RFM95 {
 
         ClearIrqFlags();
         // #TODO bad register, ramp etc. configured in 0x0A reg
-        WriteByte(0x49, RH_RF95_REG_09_PA_CONFIG);  // gaussian filter BT = 0.5,
-                                                    // rise/fall time = 40us, packet
-                                                    // mode, fsk mode enabled by
-                                                    // default (reg 0x31)
-
+        WriteByte(0x49, RH_RF95_REG_0A_PA_RAMP);           // gaussian filter BT = 0.5,
+                                                           // rise/fall time = 40us, packet
+                                                           // mode, fsk mode enabled by
+                                                           // default (reg 0x31)
         WriteWord(0x0140, RH_RF95_REG_02_BITRATE_MSB);     // bitrate = 100kbps
         WriteWord(0x0333, RH_RF95_REG_04_FDEV_MSB);        // FSK deviation 50kHz
         setChannel(Channel);                               // channel
@@ -385,8 +383,8 @@ class RFM95 {
     void ContinousModeTest(void) const {
         uint8_t Old;
 
-        WriteMode(RH_RF95_MODE_STDBY);  // change mode to STBY
-        WriteByte(0x49, RH_RF95_REG_0A_PA_RAMP);
+        WriteMode(RH_RF95_MODE_STDBY);            // change mode to STBY
+        WriteByte(0x49, RH_RF95_REG_0A_PA_RAMP);  // 50us ramp, gaussian BT 0.5
 
         // WriteTxPowerMin();
         WriteTxPower(23, 0);

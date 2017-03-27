@@ -30,6 +30,7 @@ inline void UART2_TxKick(void) {
 
 int UART2_Read(uint8_t &Byte);
 void UART2_Write(char Byte);
+void UART2_WriteNBytes(char *buffer, int n);
 void UART2_WriteStr(char *str);
 
 #endif  // __UART2_H__

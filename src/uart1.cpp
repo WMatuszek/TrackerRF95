@@ -8,7 +8,7 @@
 
 #include "uart1.h"
 
-VolatileFIFO<uint8_t, 32> UART1_RxFIFO;
+VolatileFIFO<uint8_t, 64> UART1_RxFIFO;
 VolatileFIFO<uint8_t, 64> UART1_TxFIFO;
 
 // UART1 pins:

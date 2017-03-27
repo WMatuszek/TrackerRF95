@@ -101,7 +101,8 @@ class NMEA_RxMsg  // receiver for the NMEA sentences
            if(Char<='9') return Char-'0';
            return -1; }
     */
-    static int8_t HexValue(uint8_t Char) {
+    static int8_t HexValue(uint8_t Char)
+    {
         if (Char < '0') return -1;
         if (Char <= '9') return Char - '0';
         if (Char < 'A') return -1;

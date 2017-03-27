@@ -4,11 +4,12 @@
 #include "stm32f10x_spi.h"
 
 #include "fifo.h"
+#include "format.h"
 #include "rf.h"
 #include "rfm95.h"
 #include "spi.h"
 #include "tim.h"
-#include "uart1.h"
+#include "uart2.h"
 
 // RFM device DIO pin map to GPIO B
 #define RFM95_DIO0 GPIO_Pin_3
@@ -128,8 +129,10 @@ void StartRFchip(void) {
 
 /*
  * Transmits packet of default lenght of 26
+ * Return 1 on success - PacketSent IRQ active
  */
-void RFM95_TransmitPacket(uint8_t *txPakData) {
+uint8_t RFM95_TransmitPacket(uint8_t *txPakData) {
+    uint8_t retCode = 0;
     TRX.WriteMode(RH_RF95_MODE_STDBY);  // go standby mode for TX setup
     TRX.WriteTxPower(14);               // write TX power
     TRX.WriteSYNC(8, 7, OGN_SYNC);      // write complete SYNC seq
@@ -144,12 +147,16 @@ void RFM95_TransmitPacket(uint8_t *txPakData) {
         uint8_t mode = TRX.ReadMode();
         uint16_t flags = TRX.ReadIrqFlags();
         if (mode != RH_RF95_MODE_TX) break;  // mode no longer TX
-        if (RFM95_DIO0_isOn()) break;        // PacketSent IRQ active
+        if (RFM95_DIO0_isOn()) {             // PacketSent IRQ active
+            retCode = 1;
+            break;
+        }
     }
 
     TRX.WriteMode(RH_RF95_MODE_STDBY);  // mode back to STDBY
     TRX.WriteTxPowerMin();              // write min power (?)
     TRX.WriteSYNC(7, 7, OGN_SYNC);      // write incomplete SYNC seq for RX mode (#TODO why?)
+    return retCode;
 }
 
 /*
@@ -167,7 +174,7 @@ uint8_t RFM95_ReceivePacket(uint8_t *pakData, uint8_t *pakErr) {
     return 1;
 }
 
-RFM95_RX_Stats RFM95_Receive_TEST(uint8_t *pakData, uint8_t *expectedData, uint8_t rcvSlot_ms) {
+RFM95_RX_Stats RFM95_Receive_TEST(uint8_t *pakData, uint8_t *expectedData, uint16_t rcvSlot_ms) {
     uint8_t tmp;
     uint8_t errBuffer[26];
     struct RFM95_RX_Stats stats;
@@ -178,14 +185,27 @@ RFM95_RX_Stats RFM95_Receive_TEST(uint8_t *pakData, uint8_t *expectedData, uint8
     TIM3_DelayMS(1);                 // Wait for RxReady (default BW -> 600us)
 
     // Wait for rcvSlot ms while receiving packets
+    // #TODO except not at all tht many ms because UART writes
     for (rcvSlot_ms; rcvSlot_ms; --rcvSlot_ms) {
         tmp = RFM95_ReceivePacket(pakData, errBuffer);
 
         // Check for byte errors
-        if (tmp)
-            for (int i = 0; i < 26; ++i)
-                if (pakData[i] != expectedData[i]) stats.byteErrorCnt++;
+        if (tmp) {
+            Format_String(UART2_Write, "RX ");  // Received packet to UART2
+            Format_Bytes(UART2_Write, pakData, 26);
 
+            uint8_t errThisPacket = 0;
+            for (int i = 0; i < 26; ++i) {
+                if (pakData[i] != expectedData[i]) errThisPacket++;
+            }
+            if (errThisPacket) {
+                Format_String(UART2_Write, "ERR ");  // Byte error cnt to UART2
+                Format_Hex(UART2_Write, errThisPacket);
+            }
+
+            Format_String(UART2_Write, "\n");  // new line to UART2
+            stats.byteErrorCnt += errThisPacket;
+        }
         stats.rxPacketCnt += tmp;
         TIM3_DelayMS(1);
     }
